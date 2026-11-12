@@ -218,11 +218,11 @@ ol.list{list-style:none;margin:8px 0 0;padding:0}
   // ---------- saved settings ----------
   let saved={};
   try{saved=JSON.parse(localStorage.getItem(KEY)||'{}')||{}}catch(e){saved={}}
-  if(typeof saved.shuffle==='boolean')S.shuffle=saved.shuffle;
+  S.shuffle=(saved.v===2&&typeof saved.shuffle==='boolean')?saved.shuffle:true;
   if(['off','all','one'].includes(saved.repeat))S.repeat=saved.repeat;
   function save(extra){
     const t=cur();
-    const data={shuffle:S.shuffle,repeat:S.repeat,
+    const data={v:2,shuffle:S.shuffle,repeat:S.repeat,
       name:t?t.name:saved.name, time:t?Math.floor(v.currentTime||0):saved.time};
     Object.assign(data,extra||{});
     saved=data;
