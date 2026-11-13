@@ -531,17 +531,12 @@ ol.list{list-style:none;margin:8px 0 0;padding:0}
     if(!('mediaSession' in navigator))return;
     try{navigator.mediaSession.metadata=new MediaMetadata({title:t.title,artist:t.artist||'',album:'나만의 MV'})}catch(e){}
   }
-  // iPhone shows 10-second skip buttons unless next/previous are registered (and the skip ones cleared) once playback has started
-  function bindMedia(){
-    if(!('mediaSession' in navigator))return;
+  if('mediaSession' in navigator){
     const h=(a,f)=>{try{navigator.mediaSession.setActionHandler(a,f)}catch(e){}};
-    h('seekbackward',null);h('seekforward',null);
     h('play',()=>v.play());h('pause',()=>v.pause());
-    h('previoustrack',prev);h('nexttrack',()=>next(false));
+    h('nexttrack',()=>next(false));h('previoustrack',prev);
     h('seekto',d=>{if(d&&isFinite(d.seekTime))v.currentTime=d.seekTime});
   }
-  bindMedia();
-  v.addEventListener('playing',bindMedia);
 
   let lock=null;
   async function wake(on){
