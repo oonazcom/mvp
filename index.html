@@ -213,7 +213,7 @@ ol.list{list-style:none;margin:8px 0 0;padding:0}
   const $=id=>document.getElementById(id);
   const v=$('v'),seek=$('seek'),list=$('list');
   const KEY='mvplayer.v1';
-  const S={tracks:[],order:[],pos:-1,shuffle:false,repeat:'all',url:null,errStreak:0,dragging:false,lastSave:0,edit:false,loadTok:0,queue:[],saving:false};
+  const S={tracks:[],order:[],pos:-1,shuffle:false,repeat:'all',url:null,errStreak:0,dragging:false,lastSave:0,edit:false,loadTok:0,queue:[],saving:false,lastTime:0,retryId:null,wantPlay:false};
 
   // ---------- saved settings ----------
   let saved={};
@@ -416,10 +416,12 @@ ol.list{list-style:none;margin:8px 0 0;padding:0}
     S.pos=-1;$('idle').hidden=false;$('nowT').textContent='재생 중인 곡 없음';$('nowA').textContent=' ';
     $('cur').textContent='0:00';$('dur').textContent='0:00';seek.value=0;paintSeek();setPlayIcon(false);
   }
-  async function load(pos,autoplay,startAt){
+  async function load(pos,autoplay,startAt,isRetry){
     if(!S.order.length)return;
     S.pos=pos;
     const t=cur();const tok=++S.loadTok;
+    if(!isRetry)S.retryId=null;
+    S.lastTime=startAt||0;if(autoplay)S.wantPlay=true;
     $('idle').hidden=true;
     $('nowT').textContent=t.title;
     $('nowA').textContent=t.artist||' ';
@@ -428,8 +430,9 @@ ol.list{list-style:none;margin:8px 0 0;padding:0}
     renderList();
     mediaMeta(t);
     save({name:t.name,time:startAt||0});
-    let blob=t.file;
+    let blob=(isRetry&&t.saved)?null:t.file; // on a retry, reopen the stored copy rather than the old in-memory link
     if(!blob&&db){try{blob=await dbGetBlob(t.id)}catch(e){blob=null}}
+    if(!blob)blob=t.file;
     if(tok!==S.loadTok)return; // user picked another song meanwhile
     if(!blob){toast('파일을 찾을 수 없습니다. 다시 추가해 주세요.',4000);return}
     if(S.url)URL.revokeObjectURL(S.url);
@@ -444,7 +447,10 @@ ol.list{list-style:none;margin:8px 0 0;padding:0}
     let p=S.pos+1;
     if(p>=S.order.length){
       if(auto&&S.repeat==='off'){v.pause();toast('목록 끝까지 재생했습니다');return}
-      if(S.shuffle&&auto)buildOrder(null);
+      if(S.shuffle&&auto){ // new round: reshuffle, but never start with the song that just ended
+        const last=S.order[S.pos];buildOrder(null);
+        if(S.order.length>1&&S.order[0]===last){const j=1+Math.floor(Math.random()*(S.order.length-1));[S.order[0],S.order[j]]=[S.order[j],S.order[0]]}
+      }
       p=0;
     }
     load(p,true);
@@ -456,7 +462,11 @@ ol.list{list-style:none;margin:8px 0 0;padding:0}
   }
   function togglePlay(){
     if(S.pos<0){if(S.order.length)load(0,true);return}
-    if(v.paused)v.play().catch(()=>{});else v.pause();
+    if(v.paused){
+      S.wantPlay=true;
+      if(!v.getAttribute('src')||v.error){load(S.pos,true,S.lastTime);return} // file link was lost: reopen at the same spot
+      v.play().catch(()=>{});
+    }else{S.wantPlay=false;v.pause()}
   }
 
   v.addEventListener('ended',()=>next(true));
@@ -464,7 +474,10 @@ ol.list{list-style:none;margin:8px 0 0;padding:0}
   v.addEventListener('pause',()=>{setPlayIcon(false);save();wake(false)});
   v.addEventListener('error',()=>{
     if(!v.getAttribute('src')||S.pos<0)return;
-    const t=cur();S.errStreak++;
+    const t=cur();
+    // The link to a stored file can go stale (iPhone, after the app sat in the background). Reopen the same song once at the same spot before giving up on it.
+    if(t&&S.retryId!==t.id){S.retryId=t.id;S.retryAt=S.lastTime;if(t.saved)t.file=null;load(S.pos,S.wantPlay,S.lastTime,true);return}
+    S.errStreak++;
     if(S.errStreak>=Math.min(5,S.order.length)){toast('연속으로 재생할 수 없는 파일이 나와 멈췄습니다',4000);return}
     toast(`재생할 수 없는 파일: ${t?t.name:''} → 다음 곡`);
     const tok=S.loadTok;
@@ -473,6 +486,8 @@ ol.list{list-style:none;margin:8px 0 0;padding:0}
   v.addEventListener('timeupdate',()=>{
     if(!S.dragging&&v.duration){seek.value=Math.round(v.currentTime/v.duration*1000);paintSeek()}
     $('cur').textContent=fmt(v.currentTime);
+    if(v.currentTime>0)S.lastTime=v.currentTime;
+    if(S.retryId&&v.currentTime>(S.retryAt||0)+3)S.retryId=null; // the reopened song is playing fine again: allow another recovery later
     const now=Date.now();if(now-S.lastSave>5000){S.lastSave=now;save()}
     if('mediaSession' in navigator&&navigator.mediaSession.setPositionState&&v.duration){
       try{navigator.mediaSession.setPositionState({duration:v.duration,position:Math.min(v.currentTime,v.duration),playbackRate:v.playbackRate})}catch(e){}
@@ -531,12 +546,17 @@ ol.list{list-style:none;margin:8px 0 0;padding:0}
     if(!('mediaSession' in navigator))return;
     try{navigator.mediaSession.metadata=new MediaMetadata({title:t.title,artist:t.artist||'',album:'나만의 MV'})}catch(e){}
   }
-  if('mediaSession' in navigator){
+  // iPhone shows 10-second skip buttons unless next/previous are registered (and the skip ones cleared) once playback has started
+  function bindMedia(){
+    if(!('mediaSession' in navigator))return;
     const h=(a,f)=>{try{navigator.mediaSession.setActionHandler(a,f)}catch(e){}};
-    h('play',()=>v.play());h('pause',()=>v.pause());
-    h('nexttrack',()=>next(false));h('previoustrack',prev);
+    h('seekbackward',null);h('seekforward',null);
+    h('play',()=>{if(v.paused)togglePlay()});h('pause',()=>{if(!v.paused)togglePlay()});
+    h('previoustrack',prev);h('nexttrack',()=>next(false));
     h('seekto',d=>{if(d&&isFinite(d.seekTime))v.currentTime=d.seekTime});
   }
+  bindMedia();
+  v.addEventListener('playing',bindMedia);
 
   let lock=null;
   async function wake(on){
@@ -545,7 +565,11 @@ ol.list{list-style:none;margin:8px 0 0;padding:0}
       else if(!on&&lock){await lock.release();lock=null}
     }catch(e){lock=null}
   }
-  document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&!v.paused)wake(true)});
+  document.addEventListener('visibilitychange',()=>{
+    if(document.visibilityState!=='visible')return;
+    if(!v.paused)wake(true);
+    if(S.pos>=0&&v.error)load(S.pos,false,S.lastTime); // came back to a broken file link: reopen quietly at the same spot
+  });
 
   document.addEventListener('keydown',e=>{
     if(e.target.tagName==='INPUT')return;
